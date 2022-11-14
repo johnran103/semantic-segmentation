@@ -5,6 +5,7 @@ from .sfnet import SFNet
 from .bisenetv1 import BiSeNetv1
 from .bisenetv2 import BiSeNetv2
 from .lawin import Lawin
+from .segformer_osm import SegFormerOSM
 
 
 __all__ = [
@@ -12,6 +13,7 @@ __all__ = [
     'Lawin',
     'SFNet', 
     'BiSeNetv1', 
+    'SegFormerOSM',
     
     # Standalone Models
     'DDRNet', 

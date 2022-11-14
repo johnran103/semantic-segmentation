@@ -21,6 +21,25 @@ class Compose:
 
         return img, mask
 
+class ComposeOSM:
+    def __init__(self, transforms: list) -> None:
+        self.transforms = transforms
+
+    def __call__(self, img: Tensor, mask: Tensor, OSM: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+        #print(f'img {img.size()}')
+        #print(f'mask {mask.size()}')
+        #print(f'OSM {OSM.size()}')
+        
+        if mask.ndim == 2:
+            assert img.shape[1:] == mask.shape
+        else:
+            assert img.shape[1:] == mask.shape[1:]
+
+        for transform in self.transforms:
+            img, mask, OSM = transform(img, mask, OSM)
+
+        return img, mask, OSM
+
 
 class Normalize:
     def __init__(self, mean: list = (0.485, 0.456, 0.406), std: list = (0.229, 0.224, 0.225)):
@@ -32,6 +51,17 @@ class Normalize:
         img /= 255
         img = TF.normalize(img, self.mean, self.std)
         return img, mask
+
+class NormalizeOSM:
+    def __init__(self, mean: list = (0.485, 0.456, 0.406), std: list = (0.229, 0.224, 0.225)):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, img: Tensor, mask: Tensor, OSM: Tensor) -> Tuple[Tensor, Tensor]:
+        img = img.float()
+        img /= 255
+        img = TF.normalize(img, self.mean, self.std)
+        return img, mask, OSM
 
 
 class ColorJitter:
@@ -107,6 +137,15 @@ class RandomHorizontalFlip:
         if random.random() < self.p:
             return TF.hflip(img), TF.hflip(mask)
         return img, mask
+
+class RandomHorizontalFlipOSM:
+    def __init__(self, p: float = 0.5) -> None:
+        self.p = p
+
+    def __call__(self, img: Tensor, mask: Tensor, OSM: Tensor) -> Tuple[Tensor, Tensor]:
+        if random.random() < self.p:
+            return TF.hflip(img), TF.hflip(mask), TF.hflip(OSM)
+        return img, mask, OSM
 
 
 class RandomVerticalFlip:
@@ -288,6 +327,34 @@ class Resize:
         return img, mask 
 
 
+class ResizeOSM:
+    def __init__(self, size: Union[int, Tuple[int], List[int]]) -> None:
+        """Resize the input image to the given size.
+        Args:
+            size: Desired output size. 
+                If size is a sequence, the output size will be matched to this. 
+                If size is an int, the smaller edge of the image will be matched to this number maintaining the aspect ratio.
+        """
+        self.size = size
+
+    def __call__(self, img: Tensor, mask: Tensor, OSM: Tensor) -> Tuple[Tensor, Tensor]:
+        H, W = img.shape[1:]
+
+        # scale the image 
+        scale_factor = self.size[0] / min(H, W)
+        nH, nW = round(H*scale_factor), round(W*scale_factor)
+        img = TF.resize(img, (nH, nW), TF.InterpolationMode.BILINEAR)
+        mask = TF.resize(mask, (nH, nW), TF.InterpolationMode.NEAREST)
+        OSM = TF.resize(OSM, (nH, nW), TF.InterpolationMode.NEAREST)
+
+        # make the image divisible by stride
+        alignH, alignW = int(math.ceil(nH / 32)) * 32, int(math.ceil(nW / 32)) * 32
+        img = TF.resize(img, (alignH, alignW), TF.InterpolationMode.BILINEAR)
+        mask = TF.resize(mask, (alignH, alignW), TF.InterpolationMode.NEAREST)
+        OSM = TF.resize(OSM, (alignH, alignW), TF.InterpolationMode.NEAREST)
+        return img, mask, OSM
+
+
 class RandomResizedCrop:
     def __init__(self, size: Union[int, Tuple[int], List[int]], scale: Tuple[float, float] = (0.5, 2.0), seg_fill: int = 0) -> None:
         """Resize the input image to the given size.
@@ -329,7 +396,49 @@ class RandomResizedCrop:
             mask = TF.pad(mask, padding, fill=self.seg_fill)
         return img, mask 
 
+class RandomResizedCropOSM:
+    def __init__(self, size: Union[int, Tuple[int], List[int]], scale: Tuple[float, float] = (0.5, 2.0), seg_fill: int = 0) -> None:
+        """Resize the input image to the given size.
+        """
+        self.size = size
+        self.scale = scale
+        self.seg_fill = seg_fill
 
+    def __call__(self, img: Tensor, mask: Tensor, OSM:Tensor) -> Tuple[Tensor, Tensor]:
+        H, W = img.shape[1:]
+        tH, tW = self.size
+
+        # get the scale
+        ratio = random.random() * (self.scale[1] - self.scale[0]) + self.scale[0]
+        # ratio = random.uniform(min(self.scale), max(self.scale))
+        scale = int(tH*ratio), int(tW*4*ratio)
+
+        # scale the image 
+        scale_factor = min(max(scale)/max(H, W), min(scale)/min(H, W))
+        nH, nW = int(H * scale_factor + 0.5), int(W * scale_factor + 0.5)
+        # nH, nW = int(math.ceil(nH / 32)) * 32, int(math.ceil(nW / 32)) * 32
+        img = TF.resize(img, (nH, nW), TF.InterpolationMode.BILINEAR)
+        mask = TF.resize(mask, (nH, nW), TF.InterpolationMode.NEAREST)
+        OSM = TF.resize(OSM, (nH, nW), TF.InterpolationMode.NEAREST)
+
+        # random crop
+        margin_h = max(img.shape[1] - tH, 0)
+        margin_w = max(img.shape[2] - tW, 0)
+        y1 = random.randint(0, margin_h+1)
+        x1 = random.randint(0, margin_w+1)
+        y2 = y1 + tH
+        x2 = x1 + tW
+        img = img[:, y1:y2, x1:x2]
+        mask = mask[:, y1:y2, x1:x2]
+        OSM = OSM[:, y1:y2, x1:x2]
+
+        # pad the image
+        if img.shape[1:] != self.size:
+            padding = [0, 0, tW - img.shape[2], tH - img.shape[1]]
+            img = TF.pad(img, padding, fill=0)
+            mask = TF.pad(mask, padding, fill=self.seg_fill)
+            OSM = TF.pad(OSM, padding, fill=self.seg_fill)
+        return img, mask, OSM
 
 def get_train_augmentation(size: Union[int, Tuple[int], List[int]], seg_fill: int = 0):
     return Compose([
@@ -345,10 +454,31 @@ def get_train_augmentation(size: Union[int, Tuple[int], List[int]], seg_fill: in
         Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     ])
 
+
+def get_train_augmentation_osm(size: Union[int, Tuple[int], List[int]], seg_fill: int = 0):
+    return ComposeOSM([
+        # ColorJitter(brightness=0.0, contrast=0.5, saturation=0.5, hue=0.5),
+        # RandomAdjustSharpness(sharpness_factor=0.1, p=0.5),
+        # RandomAutoContrast(p=0.2),
+        RandomHorizontalFlipOSM(p=0.5),
+        # RandomVerticalFlip(p=0.5),
+        # RandomGaussianBlur((3, 3), p=0.5),
+        # RandomGrayscale(p=0.5),
+        # RandomRotation(degrees=10, p=0.3, seg_fill=seg_fill),
+        RandomResizedCropOSM(size, scale=(0.5, 2.0), seg_fill=seg_fill),
+        NormalizeOSM((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+    ])
+
 def get_val_augmentation(size: Union[int, Tuple[int], List[int]]):
     return Compose([
         Resize(size),
         Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+    ])
+
+def get_val_augmentation_osm(size: Union[int, Tuple[int], List[int]]):
+    return ComposeOSM([
+        ResizeOSM(size),
+        NormalizeOSM((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     ])
 
 
